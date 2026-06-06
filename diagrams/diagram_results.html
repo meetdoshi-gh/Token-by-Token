@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Results — Neural Machine Translation</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+html{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.2) transparent}
+::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background-color:rgba(255,255,255,.15);border-radius:10px;border:2px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background-color:rgba(255,255,255,.3)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  --bg:#0c0b09; --bg2:#1a1714; --bg3:#211e1a;
+  --ink:#f0ede6; --ink2:#b8b4aa; --ink3:#888580;
+  --bdr:rgba(255,255,255,.10);
+  background:var(--bg); color:var(--ink);
+  font-family:'DM Mono',monospace,sans-serif; padding:20px 18px 12px; min-height:100%
+}
+body.light{
+  --bg:#f5f3ef; --bg2:#ffffff; --bg3:#eeebe5;
+  --ink:#1a1714; --ink2:#44403c; --ink3:#78716c;
+  --bdr:rgba(0,0,0,.12)
+}
+.theme-btn{position:fixed;top:16px;right:18px;z-index:999;width:38px;height:38px;border-radius:50%;border:1.5px solid var(--bdr);background:var(--bg2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;transition:all .2s}
+.stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:20px}
+.stat{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:16px;text-align:center}
+.stat-n{font-size:28px;font-weight:700;font-family:'DM Mono',monospace;margin-bottom:4px}
+.stat-l{font-size:11px;color:var(--ink3)}
+.charts{display:grid;grid-template-columns:3fr 2fr;gap:14px;margin-bottom:14px}
+@media(max-width:640px){.charts{grid-template-columns:1fr}}
+.card{background:var(--bg2);border:1px solid var(--bdr);border-radius:10px;padding:16px}
+.card-t{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);margin-bottom:12px}
+canvas{max-height:240px}
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--bdr)}
+th{color:var(--ink3);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+.foot{font-size:9px;color:var(--ink3);text-align:right;margin-top:10px}
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" onclick="toggleTheme()">🌙</button>
+
+<div style="width:100%;max-width:1100px;margin:0 auto">
+
+  <!-- Title row -->
+  <div style="display:flex;align-items:center;gap:0;margin-bottom:20px">
+    <div style="flex:1;height:2px;border-radius:1px;background:linear-gradient(90deg,#7B35CC,#DB2777,#EA580C);opacity:.65"></div>
+    <span style="font-family:'DM Mono',monospace;font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink3);padding:0 18px;white-space:nowrap">EXPERIMENTAL RESULTS</span>
+    <div style="flex:1;height:2px;border-radius:1px;background:linear-gradient(90deg,#EA580C,#DB2777,#7B35CC);opacity:.65"></div>
+  </div>
+
+  <!-- Stat cards -->
+  <div class="stat-row">
+    <div class="stat" style="border-top:2px solid #dc2626">
+      <div class="stat-n" style="color:#fca5a5">~27</div>
+      <div class="stat-l">RNN Baseline Val PPL</div>
+    </div>
+    <div class="stat" style="border-top:2px solid #EA580C">
+      <div class="stat-n" style="color:#fdba74">~19</div>
+      <div class="stat-l">LSTM + Cosine Attn</div>
+    </div>
+    <div class="stat" style="border-top:2px solid #9333EA">
+      <div class="stat-n" style="color:#d8b4fe">14.8</div>
+      <div class="stat-l">Transformer (tuned)</div>
+    </div>
+    <div class="stat" style="border-top:2px solid #D97706">
+      <div class="stat-n" style="color:#fcd34d">45%</div>
+      <div class="stat-l">Total PPL Reduction</div>
+    </div>
+    <div class="stat" style="border-top:2px solid #059669">
+      <div class="stat-n" style="color:#6ee7b7">3</div>
+      <div class="stat-l">Architectures (from scratch)</div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts">
+    <div class="card">
+      <div class="card-t">Validation Perplexity — Training Progression (illustrative trend)</div>
+      <canvas id="curves"></canvas>
+    </div>
+    <div class="card">
+      <div class="card-t">Final Val PPL — Model Comparison</div>
+      <canvas id="bars"></canvas>
+    </div>
+  </div>
+
+  <!-- Results table -->
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-t">Architecture Summary</div>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>Model</th><th>Val PPL</th><th>Δ vs Baseline</th><th>Key Mechanism</th><th>Notes</th></tr></thead>
+        <tbody id="tbl"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <p class="foot">meetdoshi.me · Token by Token: Neural Machine Translation · curves are illustrative trends from known checkpoints</p>
+</div>
+
+<script>
+/* ── wmPlugin ── */
+const wmPlugin={
+  id:'wm',
+  afterDraw(chart){
+    const ctx=chart.ctx;
+    const{left,right,top,bottom}=chart.chartArea;
+    ctx.save();
+    ctx.font='bold 14px Arial';
+    ctx.fillStyle='rgba(128,128,128,0.11)';
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    for(let x=left+80;x<right;x+=170){
+      for(let y=top+40;y<bottom;y+=95){
+        ctx.save();ctx.translate(x,y);ctx.rotate(-Math.PI/9);
+        ctx.fillText('meetdoshi.me',0,0);ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
+};
+
+/* ── seeded RNG → smooth curves ── */
+function rng(seed){let s=seed;return()=>{s=(s*1664525+1013904223)>>>0;return s/0xffffffff}}
+function makeCurve(start,end,n,seed,noise=2.2){
+  const r=rng(seed);
+  const pts=Array.from({length:n},(_,i)=>{
+    const t=i/(n-1);
+    const sig=1/(1+Math.exp(-8*(t-0.35)));
+    return start+(end-start)*sig+(r()-.5)*noise*2;
+  });
+  // 3-point moving average
+  return pts.map((v,i,a)=>{
+    const w=a.slice(Math.max(0,i-1),i+2);
+    return +(w.reduce((s,x)=>s+x,0)/w.length).toFixed(2);
+  });
+}
+const N=9, xlabels=Array.from({length:N},(_,i)=>i+1);
+
+/* Colors */
+const C={
+  rnn:'#2563EB', lstm:'#DB2777', lstmA:'#EA580C', trfD:'#9333EA', trfT:'#059669'
+};
+
+/* Chart.js global defaults — will be updated on theme change */
+Chart.defaults.color='#888580';
+Chart.defaults.borderColor='rgba(255,255,255,.08)';
+
+const curvesCtx=document.getElementById('curves').getContext('2d');
+const chartCurves=new Chart(curvesCtx,{
+  type:'line',
+  data:{
+    labels:xlabels,
+    datasets:[
+      {label:'RNN Seq2Seq',        data:makeCurve(80,27,N,11),borderColor:C.rnn,  borderWidth:2,tension:.42,pointRadius:0,fill:false,backgroundColor:C.rnn+'22'},
+      {label:'LSTM Seq2Seq',       data:makeCurve(74,22,N,22),borderColor:C.lstm, borderWidth:2,tension:.42,pointRadius:0,fill:false,backgroundColor:C.lstm+'22'},
+      {label:'LSTM + Attn',        data:makeCurve(70,19,N,33),borderColor:C.lstmA,borderWidth:2.5,tension:.42,pointRadius:0,fill:false,backgroundColor:C.lstmA+'22'},
+      {label:'Transformer (def)',  data:makeCurve(44,22,N,44,1.8),borderColor:C.trfD,borderWidth:2,tension:.42,pointRadius:0,fill:false,backgroundColor:C.trfD+'22'},
+      {label:'Transformer (tuned)',data:makeCurve(44,14.8,N,55,1.6),borderColor:C.trfT,borderWidth:2.5,tension:.42,pointRadius:0,fill:false,backgroundColor:C.trfT+'22'},
+    ]
+  },
+  options:{
+    responsive:true,
+    plugins:{
+      legend:{display:true,position:'bottom',labels:{color:'#888580',font:{family:'DM Mono,monospace',size:10},boxWidth:12,padding:10}},
+      tooltip:{callbacks:{title:v=>`Epoch ${v[0].label}`}}
+    },
+    scales:{
+      x:{title:{display:true,text:'Epoch',color:'#888580',font:{size:10}},grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#888580',font:{size:10}}},
+      y:{title:{display:true,text:'Val Perplexity (↓ better)',color:'#888580',font:{size:10}},grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#888580',font:{size:10}},min:10,max:88}
+    }
+  },
+  plugins:[wmPlugin]
+});
+
+const barsCtx=document.getElementById('bars').getContext('2d');
+const chartBars=new Chart(barsCtx,{
+  type:'bar',
+  data:{
+    labels:['RNN','LSTM','LSTM+Attn','Transformer\n(default)','Transformer\n(tuned)'],
+    datasets:[{
+      label:'Val PPL',
+      data:[27,22,19,22,14.8],
+      backgroundColor:[C.rnn+'bb',C.lstm+'bb',C.lstmA+'bb',C.trfD+'bb',C.trfT+'bb'],
+      borderColor:[C.rnn,C.lstm,C.lstmA,C.trfD,C.trfT],
+      borderWidth:2,borderRadius:6
+    }]
+  },
+  options:{
+    responsive:true,
+    plugins:{
+      legend:{display:false},
+      tooltip:{callbacks:{label:v=>`PPL: ${v.raw}`}}
+    },
+    scales:{
+      x:{grid:{display:false},ticks:{color:'#888580',font:{size:9}}},
+      y:{title:{display:true,text:'Val Perplexity',color:'#888580',font:{size:10}},grid:{color:'rgba(255,255,255,.05)'},ticks:{color:'#888580',font:{size:10}},min:0,max:32}
+    }
+  },
+  plugins:[wmPlugin]
+});
+
+/* Table */
+const rows=[
+  {m:'RNN Seq2Seq',       ppl:'~27',  d:'—',       mech:'Sequential overwrite, h_T bottleneck', note:'Baseline',        c:C.rnn},
+  {m:'LSTM Seq2Seq',      ppl:'~22',  d:'−18.5%',  mech:'Gated memory, cell state highway',     note:'No attention',     c:C.lstm},
+  {m:'LSTM + Cosine Attn',ppl:'~19',  d:'−29.6%',  mech:'Dynamic context, magnitude-invariant', note:'Novel mechanism',  c:C.lstmA},
+  {m:'Transformer (def)', ppl:'~22',  d:'−18.5%',  mech:'MHA parallel self-attention',          note:'LR too high',      c:C.trfD},
+  {m:'Transformer (tuned)',ppl:'14.8',d:'−45.2%',  mech:'MHA + tuned LR + dropout',             note:'Best result',      c:C.trfT},
+];
+const tbl=document.getElementById('tbl');
+rows.forEach(r=>{
+  const tr=document.createElement('tr');
+  tr.innerHTML=`
+    <td style="color:${r.c};font-weight:600">${r.m}</td>
+    <td style="color:var(--ink);font-weight:700">${r.ppl}</td>
+    <td style="color:var(--ink2)">${r.d}</td>
+    <td style="color:var(--ink2)">${r.mech}</td>
+    <td style="color:var(--ink3);font-size:11px">${r.note}</td>`;
+  tbl.appendChild(tr);
+});
+
+/* Theme toggle */
+let dark=true;
+const charts=[chartCurves,chartBars];
+function applyChartTheme(isDark){
+  const gc=isDark?'rgba(255,255,255,.05)':'rgba(0,0,0,.06)';
+  const tc=isDark?'#888580':'#78716c';
+  charts.forEach(c=>{
+    ['x','y'].forEach(ax=>{
+      if(!c.options.scales[ax])return;
+      c.options.scales[ax].grid.color=gc;
+      c.options.scales[ax].ticks.color=tc;
+      if(c.options.scales[ax].title)c.options.scales[ax].title.color=tc;
+    });
+    if(c.options.plugins.legend&&c.options.plugins.legend.labels)
+      c.options.plugins.legend.labels.color=tc;
+    c.update();
+  });
+}
+function toggleTheme(){
+  dark=!dark;
+  document.body.className=dark?'':'light';
+  document.getElementById('themeBtn').textContent=dark?'🌙':'☀️';
+  applyChartTheme(dark);
+}
+if(window.matchMedia('(prefers-color-scheme: light)').matches)toggleTheme();
+</script>
+
+<script>
+(function(){
+  function sendHeight(){
+    var h = Math.max(
+      document.body.scrollHeight,
+      document.documentElement.scrollHeight
+    );
+    window.parent.postMessage({ type:'iframeResize', h:h }, '*');
+  }
+  // Fire after load + short delay (handles JS-rendered SVG content)
+  window.addEventListener('load', function(){ setTimeout(sendHeight, 150); });
+  // Re-fire on any layout change (theme toggle, tooltip open, window resize)
+  if(window.ResizeObserver){
+    new ResizeObserver(sendHeight).observe(document.documentElement);
+  }
+})();
+</script>
+
+</body>
+</html>

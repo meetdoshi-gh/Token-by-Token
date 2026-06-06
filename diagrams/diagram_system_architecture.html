@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>System Architecture — NMT</title>
+<style>
+html{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.2) transparent}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background-color:rgba(255,255,255,.15);border-radius:10px;border:2px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background-color:rgba(255,255,255,.3)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  --bg:#0c0b09; --bg2:#1a1714;
+  --ink:#f0ede6; --ink2:#b8b4aa; --ink3:#888580;
+  --bdr:rgba(255,255,255,.10); --sh:0 2px 8px rgba(0,0,0,.6);
+  /* source/target */
+  --tok-bg:#180d2e; --tok-bd:#7B35CC; --tok-h:#c090ff; --tok-s:#a070e8;
+  /* RNN encoder/decoder */
+  --rnn-bg:#0d1a2e; --rnn-bd:#2563EB; --rnn-h:#93c5fd; --rnn-s:#60a5fa;
+  /* bottleneck */
+  --bot-bg:#2e0a0a; --bot-bd:#dc2626; --bot-h:#fca5a5; --bot-s:#f87171;
+  /* attention — KEY novel, glow */
+  --attn-bg:#2e1407; --attn-bd:#EA580C; --attn-h:#fdba74; --attn-s:#f97316;
+  /* decoder / FFN */
+  --dec-bg:#0d261a; --dec-bd:#059669; --dec-h:#6ee7b7; --dec-s:#34d399;
+  /* transformer */
+  --trf-bg:#1a0a2e; --trf-bd:#9333EA; --trf-h:#d8b4fe; --trf-s:#a855f7;
+  /* PPL output */
+  --ppl-rnn-bg:#2e0a0a; --ppl-rnn-bd:#dc2626;
+  --ppl-lstm-bg:#2e1407; --ppl-lstm-bd:#EA580C;
+  --ppl-trf-bg:#1a0a2e; --ppl-trf-bd:#9333EA;
+  background:var(--bg); color:var(--ink);
+  font-family:'DM Mono',monospace,sans-serif; min-height:100%
+}
+body.light{
+  --bg:#f5f3ef; --bg2:#ffffff; --ink:#1a1714; --ink2:#44403c; --ink3:#78716c;
+  --bdr:rgba(0,0,0,.12); --sh:0 2px 8px rgba(0,0,0,.10);
+  --tok-bg:#ede9fe; --tok-bd:#7C3AED; --tok-h:#5b21b6; --tok-s:#8b5cf6;
+  --rnn-bg:#dbeafe; --rnn-bd:#1D4ED8; --rnn-h:#1e3a8a; --rnn-s:#3b82f6;
+  --bot-bg:#fee2e2; --bot-bd:#b91c1c; --bot-h:#7f1d1d; --bot-s:#dc2626;
+  --attn-bg:#ffedd5; --attn-bd:#C2410C; --attn-h:#7c2d12; --attn-s:#f97316;
+  --dec-bg:#d1fae5; --dec-bd:#047857; --dec-h:#064e3b; --dec-s:#10b981;
+  --trf-bg:#f5f3ff; --trf-bd:#7C3AED; --trf-h:#4c1d95; --trf-s:#8b5cf6;
+  --ppl-rnn-bg:#fee2e2; --ppl-rnn-bd:#b91c1c;
+  --ppl-lstm-bg:#ffedd5; --ppl-lstm-bd:#C2410C;
+  --ppl-trf-bg:#f5f3ff; --ppl-trf-bd:#7C3AED;
+}
+.theme-btn{position:fixed;top:16px;right:18px;z-index:999;width:38px;height:38px;border-radius:50%;border:1.5px solid var(--bdr);background:var(--bg2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;transition:all .2s}
+.theme-btn:hover{transform:scale(1.08)}
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" onclick="toggleTheme()">🌙</button>
+
+<!--
+  ═══ LAYOUT ════════════════════════════════════════════════════════
+  viewBox: 0 0 1040 490
+
+  X ZONES:
+    Source       : x=38..132      cx=85
+    Main flow    : x=150..730
+    Target Tokens: x=748..868     cx=808  cy=242  (shared, all 3 nets end here)
+    PPL column   : x=880..968     (dedicated right column, 3 stacked badges)
+
+  LANES (lane bg rects):
+    RNN          : y=54..166      cy_lane=110
+    LSTM+Attn    : y=174..302     cy_lane=238
+    Transformer  : y=310..468     cy_lane=389
+
+  SOURCE node: y=215..269 (centers on LSTM lane cy=242, spans visually)
+
+  TARGET TOKENS node: y=215..269, same height, cx=808 cy=242
+    ← RNN Decoder right edge (566, 110) → diagonal down-right → Target top-left area
+    ← LSTM Decoder right edge (600, 238) → nearly horizontal → Target left
+    ← Transformer Final Linear right edge (730, 389) → diagonal up-right → Target bottom-left
+
+  PPL BADGES — aligned with lane cy, x=880..968:
+    RNN PPL    : y=87..127        cy=107
+    LSTM PPL   : y=208..256       cy=232
+    Transformer: y=374..430       cy=402
+  ══════════════════════════════════════════════════════════════════
+-->
+
+<div style="width:100%;max-width:1100px;margin:0 auto;padding:20px 16px 4px">
+
+  <!-- Title row -->
+  <div style="display:flex;align-items:center;gap:0;margin-bottom:22px">
+    <div style="flex:1;height:2px;border-radius:1px;background:linear-gradient(90deg,#7B35CC,#DB2777,#EA580C);opacity:.65"></div>
+    <span style="font-family:'DM Mono',monospace;font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink3);padding:0 18px;white-space:nowrap">SYSTEM ARCHITECTURE</span>
+    <div style="flex:1;height:2px;border-radius:1px;background:linear-gradient(90deg,#EA580C,#DB2777,#7B35CC);opacity:.65"></div>
+  </div>
+
+  <svg viewBox="0 0 1040 490" width="100%" style="display:block" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Open-chevron markers per color -->
+    <marker id="mh-rnn"  markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#2563EB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-bot"  markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#dc2626" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-attn" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#EA580C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-dec"  markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#059669" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-trf"  markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#9333EA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-tok"  markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#7B35CC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-gray" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#666" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <filter id="glow-attn" filterUnits="userSpaceOnUse" x="270" y="160" width="280" height="160">
+      <feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow-mha" filterUnits="userSpaceOnUse" x="282" y="290" width="260" height="170">
+      <feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Subtitle -->
+  <text x="520" y="20" text-anchor="middle" font-size="11" fill="var(--ink3)" font-family="DM Mono,monospace">Three architectures · shared source input · progressive bottleneck relaxation → PPL 27 → 19 → 14.8</text>
+
+  <!-- ══════════════════════════════════════════════════
+       LANE BACKGROUND RECTS
+       ══════════════════════════════════════════════════ -->
+  <!-- RNN lane -->
+  <rect x="30" y="54"  width="836" height="112" rx="8" fill="var(--rnn-bg)" stroke="var(--rnn-bd)" stroke-width="1" opacity=".45"/>
+  <!-- LSTM+Attn lane -->
+  <rect x="30" y="174" width="836" height="128" rx="8" fill="var(--attn-bg)" stroke="var(--attn-bd)" stroke-width="1" opacity=".35"/>
+  <!-- Transformer lane -->
+  <rect x="30" y="310" width="836" height="158" rx="8" fill="var(--trf-bg)" stroke="var(--trf-bd)" stroke-width="1" opacity=".35"/>
+
+  <!-- Lane labels -->
+  <text x="18" y="112"  font-size="9" fill="var(--rnn-s)"  transform="rotate(-90,18,112)"  text-anchor="middle" font-family="DM Mono,monospace" letter-spacing=".15em">RNN</text>
+  <text x="18" y="240"  font-size="9" fill="var(--attn-s)" transform="rotate(-90,18,240)"  text-anchor="middle" font-family="DM Mono,monospace" letter-spacing=".15em">LSTM+ATTN</text>
+  <text x="18" y="392"  font-size="9" fill="var(--trf-s)"  transform="rotate(-90,18,392)"  text-anchor="middle" font-family="DM Mono,monospace" letter-spacing=".15em">TRANSFORMER</text>
+
+  <!-- ══════════════════════════════════════════════════
+       COLUMN HEADER LABELS (above lane area, small)
+       ══════════════════════════════════════════════════ -->
+  <text x="808" y="46" text-anchor="middle" font-size="9" fill="var(--tok-s)" letter-spacing=".12em" font-family="DM Mono,monospace">OUTPUT</text>
+  <text x="924" y="46" text-anchor="middle" font-size="9" fill="var(--ink3)"  letter-spacing=".12em" font-family="DM Mono,monospace">VAL PPL</text>
+  <!-- Vertical separator lines for columns -->
+  <line x1="746" y1="50" x2="746" y2="474" stroke="var(--bdr)" stroke-width="1"/>
+  <line x1="874" y1="50" x2="874" y2="474" stroke="var(--bdr)" stroke-width="1"/>
+
+  <!-- ══════════════════════════════════════════════════
+       SHARED SOURCE TOKEN (left, spans lanes)
+       ══════════════════════════════════════════════════ -->
+  <g data-tip="Source tokens: integer indices into the source vocabulary, padded to T=43. Identical input fed to all three architectures. Embedding lookup maps each index to a dense hidden_dim vector.">
+    <rect x="38" y="215" width="94" height="54" rx="8" fill="var(--tok-bg)" stroke="var(--tok-bd)" stroke-width="2"/>
+    <text x="85" y="235" text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--tok-s)" font-family="DM Mono,monospace">SOURCE</text>
+    <text x="85" y="253" text-anchor="middle" font-size="14" font-weight="700" fill="var(--tok-h)" font-family="DM Mono,monospace">Tokens</text>
+    <text x="85" y="267" text-anchor="middle" font-size="10" fill="var(--tok-s)" font-family="DM Mono,monospace">(N, T=43)</text>
+  </g>
+
+  <!-- ══════════════════════════════════════════════════
+       SHARED TARGET TOKENS (center-right column, all 3 nets end here)
+       ══════════════════════════════════════════════════ -->
+  <g data-tip="Target tokens: output of all three architectures. RNN and LSTM decoders generate autoregressively — one token per step, feeding previous output as next input. Transformer maps each source position to an output token in one parallel pass. All models optimised with cross-entropy loss against ground-truth target sequences.">
+    <rect x="754" y="215" width="114" height="54" rx="8" fill="var(--tok-bg)" stroke="var(--tok-bd)" stroke-width="2.5"/>
+    <text x="811" y="235" text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--tok-s)" font-family="DM Mono,monospace">TARGET</text>
+    <text x="811" y="253" text-anchor="middle" font-size="14" font-weight="700" fill="var(--tok-h)" font-family="DM Mono,monospace">Tokens</text>
+    <text x="811" y="267" text-anchor="middle" font-size="10" fill="var(--tok-s)" font-family="DM Mono,monospace">target vocab</text>
+  </g>
+
+  <!-- ══════════════════════════════════════════════════
+       PPL COLUMN — right of separator, one badge per lane
+       ══════════════════════════════════════════════════ -->
+
+  <!-- RNN PPL badge (aligned with RNN lane cy=110) -->
+  <g data-tip="RNN Seq2Seq validation perplexity ~27. Plain bottleneck — all source context must fit in h_T alone. Establishes the baseline cost of the information bottleneck.">
+    <rect x="882" y="82" width="88" height="56" rx="7" fill="var(--ppl-rnn-bg)" stroke="var(--ppl-rnn-bd)" stroke-width="1.5"/>
+    <text x="926" y="101" text-anchor="middle" font-size="9"  letter-spacing=".1em" fill="#f87171" font-family="DM Mono,monospace">RNN</text>
+    <text x="926" y="120" text-anchor="middle" font-size="18" font-weight="700" fill="#fca5a5" font-family="DM Mono,monospace">~27</text>
+    <text x="926" y="132" text-anchor="middle" font-size="9" fill="#f87171" font-family="DM Mono,monospace">baseline</text>
+  </g>
+
+  <!-- LSTM+Attn PPL badge (aligned with LSTM lane cy=238) -->
+  <g data-tip="LSTM + Cosine Attention validation perplexity ~19. Cosine attention breaks the bottleneck — decoder gets dynamic context per step. 29.6% reduction from RNN baseline.">
+    <rect x="882" y="206" width="88" height="64" rx="7" fill="var(--ppl-lstm-bg)" stroke="var(--ppl-lstm-bd)" stroke-width="1.5"/>
+    <text x="926" y="224" text-anchor="middle" font-size="9"  letter-spacing=".1em" fill="var(--attn-s)" font-family="DM Mono,monospace">LSTM+ATTN</text>
+    <text x="926" y="246" text-anchor="middle" font-size="18" font-weight="700" fill="var(--attn-h)" font-family="DM Mono,monospace">~19</text>
+    <text x="926" y="260" text-anchor="middle" font-size="9" fill="var(--attn-s)" font-family="DM Mono,monospace">−29.6%</text>
+    <text x="926" y="271" text-anchor="middle" font-size="8" fill="var(--attn-s)" font-family="DM Mono,monospace"> </text>
+  </g>
+
+  <!-- Transformer PPL badge (aligned with Transformer lane cy=389) -->
+  <g data-tip="Transformer (tuned) validation perplexity 14.8. Default config achieved only ~22 — matched LSTM without attention — because LR was too high for the dataset scale. Tuning: reduced LR + increased dropout → 45.2% total reduction from RNN baseline.">
+    <rect x="882" y="362" width="88" height="76" rx="7" fill="var(--ppl-trf-bg)" stroke="var(--ppl-trf-bd)" stroke-width="1.5"/>
+    <text x="926" y="381" text-anchor="middle" font-size="9"  letter-spacing=".1em" fill="var(--trf-s)" font-family="DM Mono,monospace">TRANSFORMER</text>
+    <text x="926" y="407" text-anchor="middle" font-size="20" font-weight="700" fill="var(--trf-h)" font-family="DM Mono,monospace">14.8</text>
+    <text x="926" y="422" text-anchor="middle" font-size="9" fill="var(--trf-s)" font-family="DM Mono,monospace">−45.2%</text>
+    <text x="926" y="435" text-anchor="middle" font-size="8" fill="var(--trf-s)" font-family="DM Mono,monospace">(tuned)</text>
+  </g>
+
+  <!-- ══════════════════════════════════════════════════
+       RNN LANE   (cy = 110)
+       RNN Enc x=150..276   RNN Bot x=292..410   RNN Dec x=426..566
+       ══════════════════════════════════════════════════ -->
+
+  <g data-tip="RNN Encoder: h_t = tanh(x_t·W_x + h_{t-1}·W_h + b). Processes source tokens sequentially. No gating — every step overwrites the hidden state. Final h_T is the only state carried to decoder.">
+    <rect x="150" y="70" width="126" height="80" rx="8" fill="var(--rnn-bg)" stroke="var(--rnn-bd)" stroke-width="1.5"/>
+    <text x="213" y="91"  text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--rnn-s)" font-family="DM Mono,monospace">ENCODER</text>
+    <text x="213" y="110" text-anchor="middle" font-size="14" font-weight="700" fill="var(--rnn-h)" font-family="DM Mono,monospace">RNN</text>
+    <text x="213" y="127" text-anchor="middle" font-size="10" fill="var(--rnn-s)" font-family="DM Mono,monospace">h_t=tanh(Wx+Wh)</text>
+    <text x="213" y="143" text-anchor="middle" font-size="10" fill="var(--rnn-s)" font-family="DM Mono,monospace"> </text>
+  </g>
+
+  <g data-tip="Bottleneck h_T: the single fixed H-dim vector that encodes the ENTIRE source sentence. As source length grows, early-token information competes with later tokens and is progressively diluted. This is the primary failure mode of plain Seq2Seq.">
+    <rect x="292" y="70" width="118" height="80" rx="8" fill="var(--bot-bg)" stroke="var(--bot-bd)" stroke-width="1.5"/>
+    <text x="351" y="91"  text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--bot-s)" font-family="DM Mono,monospace">BOTTLENECK</text>
+    <text x="351" y="110" text-anchor="middle" font-size="14" font-weight="700" fill="var(--bot-h)" font-family="DM Mono,monospace">h_T only</text>
+    <text x="351" y="127" text-anchor="middle" font-size="10" fill="var(--bot-s)" font-family="DM Mono,monospace">fixed H-dim</text>
+    <text x="351" y="143" text-anchor="middle" font-size="10" fill="var(--bot-s)" font-family="DM Mono,monospace">vector</text>
+  </g>
+
+  <g data-tip="RNN Decoder: generates target tokens autoregressively — initialized from h_T, receives previous predicted token as input each step. No access to intermediate encoder states. All source context comes solely through the bottleneck vector.">
+    <rect x="426" y="70" width="140" height="80" rx="8" fill="var(--rnn-bg)" stroke="var(--rnn-bd)" stroke-width="1.5"/>
+    <text x="496" y="91"  text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--rnn-s)" font-family="DM Mono,monospace">DECODER</text>
+    <text x="496" y="110" text-anchor="middle" font-size="14" font-weight="700" fill="var(--rnn-h)" font-family="DM Mono,monospace">RNN</text>
+    <text x="496" y="127" text-anchor="middle" font-size="10" fill="var(--rnn-s)" font-family="DM Mono,monospace">greedy</text>
+    <text x="496" y="143" text-anchor="middle" font-size="10" fill="var(--rnn-s)" font-family="DM Mono,monospace">autoregressive</text>
+  </g>
+
+  <!-- RNN flow arrows -->
+  <!-- Source → RNN Encoder (diagonal from source right-center to enc left) -->
+  <line x1="132" y1="234" x2="144" y2="124" stroke="var(--rnn-bd)" stroke-width="2" marker-end="url(#mh-rnn)"/>
+  <line x1="144" y1="118" x2="148" y2="110" stroke="var(--rnn-bd)" stroke-width="2"/>
+  <!-- RNN Enc → Bottleneck -->
+  <line x1="276" y1="110" x2="290" y2="110" stroke="var(--rnn-bd)" stroke-width="2" marker-end="url(#mh-bot)"/>
+  <!-- Bottleneck → RNN Dec -->
+  <line x1="410" y1="110" x2="424" y2="110" stroke="var(--bot-bd)" stroke-width="2" marker-end="url(#mh-rnn)"/>
+  <!-- RNN Dec → Target Tokens (diagonal down-right from dec right edge at (566,110) to Target left at (754,226)) -->
+  <!-- Route: right edge (566,110) → corner point (700,110) → down-right to (754,224) -->
+  <line x1="566" y1="110" x2="698" y2="110" stroke="var(--rnn-bd)" stroke-width="2"/>
+  <line x1="698" y1="110" x2="752" y2="224" stroke="var(--rnn-bd)" stroke-width="2" marker-end="url(#mh-tok)"/>
+
+  <!-- ══════════════════════════════════════════════════
+       LSTM+ATTN LANE   (cy = 238)
+       LSTM Enc x=150..282   Cosine Attn x=298..452   LSTM Dec x=468..606
+       ══════════════════════════════════════════════════ -->
+
+  <!-- encoder_outputs dashed arc above LSTM lane -->
+  <path d="M216,174 Q216,148 372,148 Q432,148 432,174" fill="none" stroke="var(--ink3)" stroke-width="1.2" stroke-dasharray="5,3.5" marker-end="url(#mh-gray)"/>
+  <text x="324" y="142" text-anchor="middle" font-size="9" fill="var(--ink3)" font-family="DM Mono,monospace">encoder_outputs (N,T,H) — all states</text>
+
+  <g data-tip="LSTM Encoder: all four gate equations (i,f,g,o) as raw nn.Parameter tensors — no nn.LSTM wrapper. Xavier uniform on weights, zeros on biases. Returns encoder_outputs (N,T,H) — the full sequence of hidden states — AND the final projected hidden state for decoder init. Gating selectively preserves relevant information vs plain RNN overwrite.">
+    <rect x="150" y="186" width="132" height="88" rx="8" fill="var(--rnn-bg)" stroke="var(--rnn-bd)" stroke-width="1.5"/>
+    <text x="216" y="207" text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--rnn-s)" font-family="DM Mono,monospace">ENCODER</text>
+    <text x="216" y="226" text-anchor="middle" font-size="14" font-weight="700" fill="var(--rnn-h)" font-family="DM Mono,monospace">LSTM</text>
+    <text x="216" y="244" text-anchor="middle" font-size="10" fill="var(--rnn-s)" font-family="DM Mono,monospace">16 nn.Parameter</text>
+    <text x="216" y="260" text-anchor="middle" font-size="10" fill="var(--rnn-s)" font-family="DM Mono,monospace">Xavier init</text>
+    <text x="216" y="270" text-anchor="middle" font-size="10" fill="var(--rnn-s)" font-family="DM Mono,monospace"> </text>
+  </g>
+
+  <!-- Cosine Attention — KEY novel component, glow -->
+  <g data-tip="Cosine Attention (KEY novel): α = softmax(cosine(h_dec, encoder_outputs)). h_dec reshaped (1,N,H)→(N,1,H). cosine_similarity(dim=-1) → (N,T) scores normalized by L2 norm — so alignment is direction-only, not magnitude-driven. This eliminates early-training magnitude-dominated degenerate distributions. context_t = α · encoder_outputs ∈ (N,1,H), fresh at every decode step — bottleneck fully broken." filter="url(#glow-attn)">
+    <rect x="298" y="178" width="154" height="100" rx="8" fill="var(--attn-bg)" stroke="var(--attn-bd)" stroke-width="2.5"/>
+    <text x="375" y="200" text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--attn-s)" font-family="DM Mono,monospace">ATTENTION</text>
+    <text x="375" y="220" text-anchor="middle" font-size="14" font-weight="700" fill="var(--attn-h)" font-family="DM Mono,monospace">Cosine Sim</text>
+    <text x="375" y="238" text-anchor="middle" font-size="10" fill="var(--attn-s)" font-family="DM Mono,monospace">α=softmax(cos(q,K))</text>
+    <text x="375" y="254" text-anchor="middle" font-size="10" fill="var(--attn-s)" font-family="DM Mono,monospace">ctx = α · V</text>
+    <text x="375" y="268" text-anchor="middle" font-size="10" fill="var(--attn-s)" font-family="DM Mono,monospace"> </text>
+  </g>
+
+  <g data-tip="LSTM Decoder: context_t (N,1,H_enc) concatenated with embedded input token, projected via Linear→Tanh to emb_size. This fused representation feeds the LSTM recurrent layer. Output projected to target vocab via log_softmax. Teacher forcing during training; greedy argmax at inference.">
+    <rect x="468" y="186" width="138" height="88" rx="8" fill="var(--dec-bg)" stroke="var(--dec-bd)" stroke-width="1.5"/>
+    <text x="537" y="207" text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--dec-s)" font-family="DM Mono,monospace">DECODER</text>
+    <text x="537" y="226" text-anchor="middle" font-size="14" font-weight="700" fill="var(--dec-h)" font-family="DM Mono,monospace">LSTM</text>
+    <text x="537" y="244" text-anchor="middle" font-size="10" fill="var(--dec-s)" font-family="DM Mono,monospace">ctx ‖ emb → linear</text>
+    <text x="537" y="260" text-anchor="middle" font-size="10" fill="var(--dec-s)" font-family="DM Mono,monospace">→ recurrent</text>
+    <text x="537" y="270" text-anchor="middle" font-size="10" fill="var(--dec-s)" font-family="DM Mono,monospace"> </text>
+  </g>
+
+  <!-- LSTM flow arrows -->
+  <!-- Source → LSTM Encoder -->
+  <line x1="132" y1="242" x2="148" y2="238" stroke="var(--rnn-bd)" stroke-width="2" marker-end="url(#mh-rnn)"/>
+  <!-- LSTM Enc → Cosine Attn -->
+  <line x1="282" y1="230" x2="296" y2="228" stroke="var(--rnn-bd)" stroke-width="2" marker-end="url(#mh-attn)"/>
+  <!-- Cosine Attn → LSTM Dec -->
+  <line x1="452" y1="228" x2="466" y2="230" stroke="var(--attn-bd)" stroke-width="2" marker-end="url(#mh-dec)"/>
+  <!-- LSTM Dec → Target Tokens (nearly horizontal from (606,230) to (754,238)) -->
+  <line x1="606" y1="230" x2="752" y2="238" stroke="var(--dec-bd)" stroke-width="2" marker-end="url(#mh-tok)"/>
+
+  <!-- ══════════════════════════════════════════════════
+       TRANSFORMER LANE   (cy = 389)
+       Embedding x=150..290  MHA x=306..468  FFN x=484..616  Linear x=632..732
+       ══════════════════════════════════════════════════ -->
+
+  <g data-tip="Word + Positional Embedding: e = e_word + e_pos. Word: nn.Embedding(input_size, hidden_dim=128). Positional: nn.Embedding(max_length=43, 128) — learned (not sinusoidal). Works because sequence length is fixed and all positions appear frequently in training. Self-attention is permutation-equivariant by design, so positional info is mandatory.">
+    <rect x="150" y="323" width="140" height="88" rx="8" fill="var(--trf-bg)" stroke="var(--trf-bd)" stroke-width="1.5"/>
+    <text x="220" y="344" text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--trf-s)" font-family="DM Mono,monospace">EMBEDDING</text>
+    <text x="220" y="363" text-anchor="middle" font-size="14" font-weight="700" fill="var(--trf-h)" font-family="DM Mono,monospace">Word + Pos</text>
+    <text x="220" y="381" text-anchor="middle" font-size="10" fill="var(--trf-s)" font-family="DM Mono,monospace">e = e_w + e_pos</text>
+    <text x="220" y="397" text-anchor="middle" font-size="10" fill="var(--trf-s)" font-family="DM Mono,monospace">(N, T, 128)</text>
+    <text x="220" y="407" text-anchor="middle" font-size="10" fill="var(--trf-s)" font-family="DM Mono,monospace"> </text>
+  </g>
+
+  <!-- Multi-Head Self-Attention — also novel, glow -->
+  <g data-tip="Multi-Head Self-Attention: 2 heads, dim_k=dim_v=96. Each head: Attention(Q,K,V)=softmax(QKᵀ/√96)·V. Outputs (N,T,96)×2 concatenated → Linear(192→128). Every position attends to every other simultaneously — NO sequential dependency, no bottleneck. Add & LayerNorm applied after." filter="url(#glow-mha)">
+    <rect x="306" y="315" width="162" height="100" rx="8" fill="var(--attn-bg)" stroke="var(--attn-bd)" stroke-width="2.5"/>
+    <text x="387" y="337" text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--attn-s)" font-family="DM Mono,monospace">SELF-ATTENTION</text>
+    <text x="387" y="357" text-anchor="middle" font-size="14" font-weight="700" fill="var(--attn-h)" font-family="DM Mono,monospace">Multi-Head</text>
+    <text x="387" y="375" text-anchor="middle" font-size="10" fill="var(--attn-s)" font-family="DM Mono,monospace">2 heads · d_k=96</text>
+    <text x="387" y="392" text-anchor="middle" font-size="10" fill="var(--attn-s)" font-family="DM Mono,monospace">+ Residual + LN</text>
+    <text x="387" y="408" text-anchor="middle" font-size="10" fill="var(--attn-s)" font-family="DM Mono,monospace"> </text>
+  </g>
+
+  <g data-tip="Feedforward sublayer: FFN(x) = max(0, xW₁+b₁)W₂+b₂. W₁: 128→2048 (ReLU), W₂: 2048→128. Applied position-wise — same computation at every of the T positions independently. 16× expansion provides nonlinear capacity that linear attention cannot. Add & LayerNorm after.">
+    <rect x="484" y="323" width="132" height="88" rx="8" fill="var(--dec-bg)" stroke="var(--dec-bd)" stroke-width="1.5"/>
+    <text x="550" y="344" text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--dec-s)" font-family="DM Mono,monospace">FEEDFORWARD</text>
+    <text x="550" y="363" text-anchor="middle" font-size="14" font-weight="700" fill="var(--dec-h)" font-family="DM Mono,monospace">FFN</text>
+    <text x="550" y="381" text-anchor="middle" font-size="10" fill="var(--dec-s)" font-family="DM Mono,monospace">128→2048→128</text>
+    <text x="550" y="397" text-anchor="middle" font-size="10" fill="var(--dec-s)" font-family="DM Mono,monospace">+ Residual + LN</text>
+    <text x="550" y="407" text-anchor="middle" font-size="10" fill="var(--dec-s)" font-family="DM Mono,monospace"> </text>
+  </g>
+
+  <g data-tip="Final Linear: hidden_dim=128 → output_vocab_size logits per position. Cross-entropy loss at training. Argmax over vocab dimension at inference gives predicted target token. Output shape: (N, T, output_size).">
+    <rect x="632" y="330" width="104" height="74" rx="8" fill="var(--trf-bg)" stroke="var(--trf-bd)" stroke-width="1.5"/>
+    <text x="684" y="351" text-anchor="middle" font-size="10" letter-spacing=".1em" fill="var(--trf-s)" font-family="DM Mono,monospace">PROJECTION</text>
+    <text x="684" y="370" text-anchor="middle" font-size="14" font-weight="700" fill="var(--trf-h)" font-family="DM Mono,monospace">Linear</text>
+    <text x="684" y="388" text-anchor="middle" font-size="10" fill="var(--trf-s)" font-family="DM Mono,monospace">128 → vocab</text>
+    <text x="684" y="400" text-anchor="middle" font-size="10" fill="var(--trf-s)" font-family="DM Mono,monospace"> </text>
+  </g>
+
+  <!-- Transformer flow arrows -->
+  <!-- Source → Embedding -->
+  <line x1="132" y1="248" x2="142" y2="358" stroke="var(--trf-bd)" stroke-width="2" marker-end="url(#mh-trf)"/>
+  <!-- Embedding → MHA -->
+  <line x1="290" y1="367" x2="304" y2="365" stroke="var(--trf-bd)" stroke-width="2" marker-end="url(#mh-attn)"/>
+  <!-- MHA → FFN -->
+  <line x1="468" y1="365" x2="482" y2="367" stroke="var(--attn-bd)" stroke-width="2" marker-end="url(#mh-dec)"/>
+  <!-- FFN → Final Linear -->
+  <line x1="616" y1="367" x2="630" y2="367" stroke="var(--dec-bd)" stroke-width="2" marker-end="url(#mh-trf)"/>
+  <!-- Final Linear → Target Tokens (diagonal up-right from (736,367) to Target left at (754,254)) -->
+  <line x1="736" y1="367" x2="752" y2="259" stroke="var(--trf-bd)" stroke-width="2" marker-end="url(#mh-tok)"/>
+
+  <!-- Watermark -->
+  <text x="1024" y="480" text-anchor="end" font-size="9" fill="var(--ink3)" font-family="DM Mono,monospace">meetdoshi.me · Neural Machine Translation</text>
+  </svg>
+
+  <!-- Legend -->
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding-top:14px;margin-top:4px;border-top:1px solid var(--bdr);font-family:'DM Mono',monospace;font-size:11px;color:var(--ink3)">
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#7B35CC"></div>Source / Target Tokens</div>
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#2563EB"></div>RNN / LSTM encoder</div>
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#dc2626"></div>Bottleneck h_T</div>
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#EA580C"></div>Attention / MHA (novel)</div>
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#059669"></div>Decoder / FFN</div>
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#9333EA"></div>Transformer</div>
+    <span style="margin-left:auto;font-size:9px;color:var(--ink3)">— — encoder_outputs (all T states, LSTM only)</span>
+  </div>
+</div>
+
+<!-- Intelligent tooltip -->
+<div id="tp" style="display:none;position:fixed;max-width:256px;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:10px 13px;font-size:10px;color:var(--ink2);line-height:1.7;z-index:200;pointer-events:none;font-family:'DM Mono',monospace;white-space:normal;word-break:break-word;box-shadow:0 8px 32px rgba(0,0,0,.5)"></div>
+
+<script>
+const tp=document.getElementById('tp'),PAD=14;
+document.querySelectorAll('[data-tip]').forEach(el=>{
+  el.style.cursor='default';
+  el.addEventListener('mouseenter',e=>{tp.textContent=el.dataset.tip;tp.style.left='-9999px';tp.style.top='-9999px';tp.style.display='block'});
+  el.addEventListener('mousemove',e=>{
+    const tw=tp.offsetWidth,th=tp.offsetHeight,vw=window.innerWidth,vh=window.innerHeight,cx=e.clientX,cy=e.clientY;
+    let left=cx+PAD,top=cy-th-PAD;
+    if(left+tw>vw-8)left=cx-tw-PAD;if(top<8)top=cy+PAD;
+    if(left<8)left=8;if(left+tw>vw-8)left=vw-tw-8;
+    if(top<8)top=8;if(top+th>vh-8)top=vh-th-8;
+    tp.style.left=left+'px';tp.style.top=top+'px'
+  });
+  el.addEventListener('mouseleave',()=>{tp.style.display='none'});
+});
+let dark=true;
+function toggleTheme(){dark=!dark;document.body.className=dark?'':'light';document.getElementById('themeBtn').textContent=dark?'🌙':'☀️'}
+if(window.matchMedia('(prefers-color-scheme: light)').matches)toggleTheme();
+</script>
+
+<script>
+(function(){
+  function sendHeight(){
+    var h = Math.max(
+      document.body.scrollHeight,
+      document.documentElement.scrollHeight
+    );
+    window.parent.postMessage({ type:'iframeResize', h:h }, '*');
+  }
+  // Fire after load + short delay (handles JS-rendered SVG content)
+  window.addEventListener('load', function(){ setTimeout(sendHeight, 150); });
+  // Re-fire on any layout change (theme toggle, tooltip open, window resize)
+  if(window.ResizeObserver){
+    new ResizeObserver(sendHeight).observe(document.documentElement);
+  }
+})();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Transformer Encoder Architecture</title>
+<style>
+html{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.2) transparent}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background-color:rgba(255,255,255,.15);border-radius:10px;border:2px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background-color:rgba(255,255,255,.3)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  --bg:#0c0b09; --bg2:#1a1714;
+  --ink:#f0ede6; --ink2:#b8b4aa; --ink3:#888580;
+  --bdr:rgba(255,255,255,.10); --sh:0 2px 8px rgba(0,0,0,.6);
+  --tok-bg:#180d2e; --tok-bd:#7B35CC; --tok-h:#c090ff; --tok-s:#a070e8;
+  --emb-bg:#1a0a2e; --emb-bd:#9333EA; --emb-h:#d8b4fe; --emb-s:#a855f7;
+  --mha-bg:#2e1407; --mha-bd:#EA580C; --mha-h:#fdba74; --mha-s:#f97316;
+  --ln-bg:#0f1f2e;  --ln-bd:#0284C7;  --ln-h:#7dd3fc;  --ln-s:#38bdf8;
+  --ffn-bg:#0d261a; --ffn-bd:#059669; --ffn-h:#6ee7b7; --ffn-s:#34d399;
+  --out-bg:#1f1a07; --out-bd:#D97706; --out-h:#fcd34d; --out-s:#f59e0b;
+  --res-bd:#0284C7; --res-h:#7dd3fc;  /* residual rail */
+  background:var(--bg); color:var(--ink);
+  font-family:'DM Mono',monospace,sans-serif; min-height:100%
+}
+body.light{
+  --bg:#f5f3ef; --bg2:#ffffff; --ink:#1a1714; --ink2:#44403c; --ink3:#78716c;
+  --bdr:rgba(0,0,0,.12); --sh:0 2px 8px rgba(0,0,0,.10);
+  --tok-bg:#ede9fe; --tok-bd:#7C3AED; --tok-h:#5b21b6; --tok-s:#8b5cf6;
+  --emb-bg:#f5f3ff; --emb-bd:#7C3AED; --emb-h:#4c1d95; --emb-s:#8b5cf6;
+  --mha-bg:#ffedd5; --mha-bd:#C2410C; --mha-h:#7c2d12; --mha-s:#f97316;
+  --ln-bg:#e0f2fe;  --ln-bd:#0369A1;  --ln-h:#0c4a6e;  --ln-s:#0ea5e9;
+  --ffn-bg:#d1fae5; --ffn-bd:#047857; --ffn-h:#064e3b; --ffn-s:#10b981;
+  --out-bg:#fef3c7; --out-bd:#B45309; --out-h:#78350f; --out-s:#d97706;
+  --res-bd:#0369A1; --res-h:#0c4a6e;
+}
+.theme-btn{position:fixed;top:16px;right:18px;z-index:999;width:38px;height:38px;border-radius:50%;border:1.5px solid var(--bdr);background:var(--bg2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;transition:all .2s}
+.theme-btn:hover{transform:scale(1.08)}
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" onclick="toggleTheme()">🌙</button>
+<!--
+LAYOUT — residual bypass rails:
+  viewBox 0 0 1060 430
+  Main data flow: horizontal, y=270 (center of sublayer boxes)
+  
+  RESIDUAL 1 (MHA):
+    Tap at x=330, y=270 → vertical up to y=165 → horizontal to x=662 → vertical down to ⊕ at (662,270)
+  
+  RESIDUAL 2 (FFN):
+    Tap at x=692, y=270 → vertical up to y=190 → horizontal to x=880 → vertical down to ⊕ at (880,270)
+  
+  Nodes:
+    Tokens: (36,244,90,52)
+    Embedding: (148,234,140,72) → cx=218
+    ⊕ word+pos: circle at (330,270)
+    MHA block: (360,220,240,100) → cx=480
+    ⊕ add1: circle at (662,270)
+    LN1: (682,244,70,52) → cx=717
+    FFN block: (774,232,130,76) → cx=839
+    ⊕ add2: circle at (880,270) — WAIT, FFN right edge is 904, so ⊕ should be at ~930
+    
+    Let me recalculate:
+    LN1 right = 752. Tap at x=762. FFN at (780,234) width 130 → right 910.
+    ⊕ add2 at cx=938.
+    LN2 at (954, 244) w70 → right 1024.
+    Final Linear: too far right for viewBox 1060.
+    
+    Better layout:
+    viewBox 0 0 1060 400
+    Tokens: 36..126, cx=81
+    Embedding: 142..282, cx=212, y=234..306
+    Pos embed adds to word embed shown as + in embedding box
+    ⊕ word+pos: NOT needed as separate node (show inside embedding box)
+    
+    After embedding (282), enter main flow.
+    
+    Residual tap 1 at x=296, y=270
+    MHA block: 306..536, cy=270, height=100 → y=220..320, cx=421
+    ⊕ Add1 at x=556, y=270
+    LN1: 572..636, cx=604, y=248..292
+    
+    Residual tap 2 at x=650, y=270
+    FFN block: 664..824, cy=270, height=80 → y=230..310, cx=744
+    ⊕ Add2 at x=844, y=270
+    LN2: 860..924, cx=892, y=248..292
+    
+    Final Linear: 938..1022, cy=270, y=244..296
+    Output badge: below at y=330
+    
+    Rail 1: y=164, x=296 to x=556
+    Rail 2: y=188, x=650 to x=844
+-->
+<div style="width:100%;max-width:1100px;margin:0 auto;padding:20px 16px 4px">
+  <div style="display:flex;align-items:center;gap:0;margin-bottom:24px">
+    <div style="flex:1;height:2px;border-radius:1px;background:linear-gradient(90deg,#9333EA,#EA580C,#059669,#D97706);opacity:.65"></div>
+    <span style="font-family:'DM Mono',monospace;font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--ink3);padding:0 18px;white-space:nowrap">TRANSFORMER ENCODER</span>
+    <div style="flex:1;height:2px;border-radius:1px;background:linear-gradient(90deg,#D97706,#059669,#EA580C,#9333EA);opacity:.65"></div>
+  </div>
+
+  <svg viewBox="0 0 1060 400" width="100%" style="display:block" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="mh-emb" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#9333EA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-mha" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#EA580C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-res" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#0284C7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-ln"  markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#0284C7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-ffn" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#059669" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-out" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#D97706" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="mh-gray" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M1,1.5 L7,4.5 L1,7.5" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <filter id="glow-mha"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  </defs>
+
+  <!-- Subtitle -->
+  <text x="530" y="18" text-anchor="middle" font-size="11" fill="var(--ink3)" font-family="DM Mono,monospace">hidden_dim=128 · 2 attention heads · dim_k=96 · dim_feedforward=2048 · learned positional encoding</text>
+
+  <!-- ═══ INPUT TOKENS ═══ -->
+  <g data-tip="Input: integer token indices, shape (N, T=43). Each index maps to a position in the embedding lookup table. T is fixed — sequences padded to max_length=43.">
+    <rect x="36" y="244" width="90" height="52" rx="8" fill="var(--tok-bg)" stroke="var(--tok-bd)" stroke-width="1.5"/>
+    <text x="81" y="264" text-anchor="middle" font-size="11" letter-spacing=".1em" fill="var(--tok-s)" font-family="DM Mono,monospace">INPUT</text>
+    <text x="81" y="282" text-anchor="middle" font-size="15" font-weight="700" fill="var(--tok-h)" font-family="DM Mono,monospace">Tokens</text>
+    <text x="81" y="297" text-anchor="middle" font-size="11" fill="var(--tok-s)" font-family="DM Mono,monospace">(N, T=43)</text>
+  </g>
+
+  <!-- ═══ EMBEDDING (word + pos combined in one box) ═══ -->
+  <g data-tip="Word Embedding: nn.Embedding(input_size, hidden_dim=128). Each token index → 128-dim vector. Positional Embedding: nn.Embedding(max_length=43, 128). Position indices 0..T-1 → (T,128) learned lookup. Both summed: e = e_word + e_pos. Learned (not sinusoidal) — appropriate for fixed-length sequences where all positions appear frequently.">
+    <rect x="142" y="228" width="148" height="84" rx="8" fill="var(--emb-bg)" stroke="var(--emb-bd)" stroke-width="1.5"/>
+    <text x="216" y="248" text-anchor="middle" font-size="11" letter-spacing=".1em" fill="var(--emb-s)" font-family="DM Mono,monospace">EMBEDDING</text>
+    <text x="216" y="267" text-anchor="middle" font-size="14" font-weight="700" fill="var(--emb-h)" font-family="DM Mono,monospace">Word + Pos</text>
+    <text x="216" y="284" text-anchor="middle" font-size="11" fill="var(--emb-s)" font-family="DM Mono,monospace">e = e_word + e_pos</text>
+    <text x="216" y="300" text-anchor="middle" font-size="11" fill="var(--emb-s)" font-family="DM Mono,monospace">(N, T, 128)</text>
+    <text x="216" y="307" text-anchor="middle" font-size="10" fill="var(--emb-s)" font-family="DM Mono,monospace"> </text>
+  </g>
+  <line x1="126" y1="270" x2="140" y2="270" stroke="var(--emb-bd)" stroke-width="2" marker-end="url(#mh-emb)"/>
+
+  <!-- Tap point for residual 1 (before MHA) at x=297, y=270 -->
+  <circle cx="297" cy="270" r="4" fill="var(--res-bd)"/>
+  <!-- Main flow line: embedding right edge (290) to MHA left (306) — flows through tap dot -->
+  <line x1="290" y1="270" x2="304" y2="270" stroke="var(--emb-bd)" stroke-width="2" marker-end="url(#mh-mha)"/>
+
+  <!-- ═══ RESIDUAL BYPASS RAIL 1 — above MHA ═══ -->
+  <!-- Vertical up from tap (297,270) to rail height (164) -->
+  <line x1="297" y1="266" x2="297" y2="168" stroke="var(--res-bd)" stroke-width="2"/>
+  <!-- Horizontal rail (297,164) to (556,164) -->
+  <line x1="297" y1="164" x2="554" y2="164" stroke="var(--res-bd)" stroke-width="2"/>
+  <!-- Vertical down from (556,164) to ⊕ circle (556,256) — stopping before circle edge -->
+  <line x1="554" y1="164" x2="554" y2="252" stroke="var(--res-bd)" stroke-width="2" marker-end="url(#mh-res)"/>
+  <!-- Rail label -->
+  <text x="425" y="154" text-anchor="middle" font-size="10" fill="var(--res-h)" font-family="DM Mono,monospace">skip connection (residual bypass)</text>
+
+  <!-- ═══ MULTI-HEAD SELF-ATTENTION — KEY NOVEL NODE ═══ -->
+  <g data-tip="Multi-Head Self-Attention (KEY contribution): 2 independent heads. Each head projects to Q,K,V spaces (dim_k=dim_v=dim_q=96) via learned matrices, computes Attention(Q,K,V)=softmax(QKᵀ/√96)·V. Outputs (N,T,96)×2 concatenated → Linear(192→128). Every position attends to every other simultaneously — NO sequential dependency. The √96 scaling prevents softmax saturation in high-dimensional space." filter="url(#glow-mha)">
+    <rect x="306" y="218" width="240" height="104" rx="8" fill="var(--mha-bg)" stroke="var(--mha-bd)" stroke-width="2.5"/>
+    <text x="426" y="240" text-anchor="middle" font-size="11" letter-spacing=".1em" fill="var(--mha-s)" font-family="DM Mono,monospace">SELF-ATTENTION</text>
+    <text x="426" y="260" text-anchor="middle" font-size="14" font-weight="700" fill="var(--mha-h)" font-family="DM Mono,monospace">Multi-Head (2 heads)</text>
+    <!-- Head sub-boxes -->
+    <rect x="318" y="268" width="96" height="24" rx="4" fill="var(--bg)" stroke="var(--mha-bd)" stroke-width="1" opacity=".5"/>
+    <text x="366" y="284" text-anchor="middle" font-size="10" fill="var(--mha-h)" font-family="DM Mono,monospace">Head 1 · d_k=96</text>
+    <rect x="422" y="268" width="112" height="24" rx="4" fill="var(--bg)" stroke="var(--mha-bd)" stroke-width="1" opacity=".5"/>
+    <text x="478" y="284" text-anchor="middle" font-size="10" fill="var(--mha-h)" font-family="DM Mono,monospace">Head 2 · d_k=96</text>
+    <text x="426" y="310" text-anchor="middle" font-size="10" fill="var(--mha-s)" font-family="DM Mono,monospace">Concat(H1,H2) → Linear(192→128)</text>
+  </g>
+  <!-- MHA right edge (546) → ⊕ Add1 left edge. Adding small gap. -->
+  <line x1="546" y1="270" x2="540" y2="270" stroke="var(--mha-bd)" stroke-width="2" marker-end="url(#mh-res)"/>
+
+  <!-- ⊕ Add 1 circle -->
+  <g data-tip="Add (Residual 1): output = MHA(x) + x. The input bypassed the entire attention sublayer and is added back here. This is the residual connection — it enables gradients to flow directly through the '+' to earlier layers without passing through the attention computation. Both paths are needed: MHA learns correlations, residual preserves identity.">
+    <circle cx="556" cy="270" r="16" fill="var(--bg)" stroke="var(--res-bd)" stroke-width="2.5"/>
+    <text x="556" y="278" text-anchor="middle" font-size="20" fill="var(--res-h)" font-family="DM Mono,monospace">+</text>
+  </g>
+  <text x="556" y="304" text-anchor="middle" font-size="10" fill="var(--res-h)" font-family="DM Mono,monospace">MHA(x) + x</text>
+
+  <!-- ═══ LAYER NORM 1 ═══ -->
+  <g data-tip="LayerNorm 1: normalizes (MHA(x)+x) across hidden dimension (not batch). LN = (x−μ)/σ × γ + β, where γ,β are learned per-dimension. Stabilizes scale after addition — prevents large activations from destabilizing deeper layers. Applied AFTER the add (Post-LN pattern).">
+    <rect x="582" y="248" width="72" height="44" rx="7" fill="var(--ln-bg)" stroke="var(--ln-bd)" stroke-width="1.5"/>
+    <text x="618" y="267" text-anchor="middle" font-size="11" letter-spacing=".06em" fill="var(--ln-s)" font-family="DM Mono,monospace">LAYER</text>
+    <text x="618" y="283" text-anchor="middle" font-size="12" font-weight="700" fill="var(--ln-h)" font-family="DM Mono,monospace">Norm</text>
+  </g>
+  <!-- ⊕1 → LN1 -->
+  <line x1="572" y1="270" x2="580" y2="270" stroke="var(--res-bd)" stroke-width="2" marker-end="url(#mh-ln)"/>
+
+  <!-- Tap for residual 2 at x=658, y=270 -->
+  <circle cx="658" cy="270" r="4" fill="var(--res-bd)"/>
+  <line x1="654" y1="270" x2="662" y2="270" stroke="var(--ln-bd)" stroke-width="2" marker-end="url(#mh-ffn)"/>
+
+  <!-- ═══ RESIDUAL BYPASS RAIL 2 — above FFN ═══ -->
+  <line x1="658" y1="266" x2="658" y2="190" stroke="var(--res-bd)" stroke-width="2"/>
+  <line x1="658" y1="190" x2="858" y2="190" stroke="var(--res-bd)" stroke-width="2"/>
+  <line x1="858" y1="190" x2="858" y2="252" stroke="var(--res-bd)" stroke-width="2" marker-end="url(#mh-res)"/>
+  <text x="758" y="180" text-anchor="middle" font-size="10" fill="var(--res-h)" font-family="DM Mono,monospace">skip connection (residual bypass)</text>
+
+  <!-- ═══ FEEDFORWARD ═══ -->
+  <g data-tip="Feedforward sublayer: FFN(x) = max(0, xW₁+b₁)W₂+b₂. Applied position-wise — same weights at every position independently. W₁: 128→2048 (ReLU activation), W₂: 2048→128. The 16× expansion (2048/128) provides nonlinear transformation capacity that the linear attention sublayer cannot — attention is linear in V, so the FFN is the only source of element-wise nonlinearity per position.">
+    <rect x="672" y="232" width="180" height="76" rx="8" fill="var(--ffn-bg)" stroke="var(--ffn-bd)" stroke-width="2"/>
+    <text x="762" y="252" text-anchor="middle" font-size="11" letter-spacing=".1em" fill="var(--ffn-s)" font-family="DM Mono,monospace">FEEDFORWARD</text>
+    <text x="762" y="271" text-anchor="middle" font-size="14" font-weight="700" fill="var(--ffn-h)" font-family="DM Mono,monospace">FFN</text>
+    <rect x="686" y="278" width="152" height="22" rx="4" fill="var(--bg)" stroke="var(--ffn-bd)" stroke-width="1" opacity=".4"/>
+    <text x="762" y="293" text-anchor="middle" font-size="10" fill="var(--ffn-h)" font-family="DM Mono,monospace">128 → 2048 (ReLU) → 128</text>
+  </g>
+  <!-- FFN right edge (852) → ⊕ Add2 -->
+  <line x1="852" y1="270" x2="842" y2="270" stroke="var(--ffn-bd)" stroke-width="2" marker-end="url(#mh-res)"/>
+
+  <!-- ⊕ Add 2 circle -->
+  <g data-tip="Add (Residual 2): output = FFN(x) + x. Same pattern as Residual 1. Both residual connections together allow gradients to flow from the loss all the way to the embedding layer with only additive interactions — no multiplicative gating that could block gradient flow.">
+    <circle cx="858" cy="270" r="16" fill="var(--bg)" stroke="var(--res-bd)" stroke-width="2.5"/>
+    <text x="858" y="278" text-anchor="middle" font-size="20" fill="var(--res-h)" font-family="DM Mono,monospace">+</text>
+  </g>
+  <text x="858" y="304" text-anchor="middle" font-size="10" fill="var(--res-h)" font-family="DM Mono,monospace">FFN(x) + x</text>
+
+  <!-- ═══ LAYER NORM 2 ═══ -->
+  <g data-tip="LayerNorm 2: same as LN1 — normalizes (FFN(x)+x) across hidden dimension. Applied after every sublayer. The combination of Add+LN is the key regularization structure of the Transformer encoder that makes training stable.">
+    <rect x="884" y="248" width="72" height="44" rx="7" fill="var(--ln-bg)" stroke="var(--ln-bd)" stroke-width="1.5"/>
+    <text x="920" y="267" text-anchor="middle" font-size="11" letter-spacing=".06em" fill="var(--ln-s)" font-family="DM Mono,monospace">LAYER</text>
+    <text x="920" y="283" text-anchor="middle" font-size="12" font-weight="700" fill="var(--ln-h)" font-family="DM Mono,monospace">Norm</text>
+  </g>
+  <!-- ⊕2 → LN2 -->
+  <line x1="874" y1="270" x2="882" y2="270" stroke="var(--res-bd)" stroke-width="2" marker-end="url(#mh-ln)"/>
+
+  <!-- ═══ FINAL LINEAR ═══ -->
+  <g data-tip="Final Linear: hidden_dim=128 → output_vocab_size. Projects each position's encoded representation to raw logits over target vocabulary. Cross-entropy loss applied during training. Argmax across vocab dimension gives predicted target token. Output shape: (N, T, output_size).">
+    <rect x="970" y="244" width="68" height="52" rx="7" fill="var(--out-bg)" stroke="var(--out-bd)" stroke-width="2"/>
+    <text x="1004" y="263" text-anchor="middle" font-size="11" letter-spacing=".06em" fill="var(--out-s)" font-family="DM Mono,monospace">FINAL</text>
+    <text x="1004" y="280" text-anchor="middle" font-size="13" font-weight="700" fill="var(--out-h)" font-family="DM Mono,monospace">Linear</text>
+    <text x="1004" y="295" text-anchor="middle" font-size="11" fill="var(--out-s)" font-family="DM Mono,monospace">128→vocab</text>
+  </g>
+  <!-- LN2 → Final Linear -->
+  <line x1="956" y1="270" x2="968" y2="270" stroke="var(--out-bd)" stroke-width="2" marker-end="url(#mh-out)"/>
+
+  <!-- PPL output badge — below Final Linear -->
+  <g data-tip="Validation perplexity: default config ~22 (same as LSTM without attention — LR too high for small dataset). Tuned: 14.8 (45.2% reduction from RNN baseline). Tuning: reduced LR + increased dropout. Demonstrates that Transformer capacity requires matched regularization.">
+    <rect x="864" y="330" width="176" height="46" rx="7" fill="var(--out-bg)" stroke="var(--out-bd)" stroke-width="1.5"/>
+    <text x="952" y="348" text-anchor="middle" font-size="11" letter-spacing=".08em" fill="var(--out-s)" font-family="DM Mono,monospace">VAL PPL (tuned)</text>
+    <text x="952" y="367" text-anchor="middle" font-size="15" font-weight="700" fill="var(--out-h)" font-family="DM Mono,monospace">14.8  (−45.2%)</text>
+  </g>
+  <line x1="1004" y1="296" x2="1004" y2="322" stroke="var(--out-bd)" stroke-width="1.5"/>
+  <line x1="1004" y1="322" x2="956" y2="330" stroke="var(--out-bd)" stroke-width="1.5" marker-end="url(#mh-out)"/>
+
+  <!-- Attention formula banner -->
+  <rect x="180" y="348" width="620" height="36" rx="7" fill="var(--mha-bg)" stroke="var(--mha-bd)" stroke-width="1" opacity=".7"/>
+  <text x="490" y="363" text-anchor="middle" font-size="11" fill="var(--mha-h)" font-family="DM Mono,monospace">Attention(Q,K,V) = softmax( QKᵀ / √d_k ) · V</text>
+  <text x="490" y="378" text-anchor="middle" font-size="10" fill="var(--mha-s)" font-family="DM Mono,monospace">d_k=96 · 2 heads in parallel · concat → Linear(192→128)</text>
+
+  <text x="1044" y="393" text-anchor="end" font-size="9" fill="var(--ink3)" font-family="DM Mono,monospace">meetdoshi.me · Neural Machine Translation</text>
+  </svg>
+
+  <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding-top:14px;margin-top:4px;border-top:1px solid var(--bdr);font-family:'DM Mono',monospace;font-size:11px;color:var(--ink3)">
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#7B35CC"></div>Input tokens</div>
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#9333EA"></div>Embedding (word+pos)</div>
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#EA580C"></div>Multi-head self-attention (novel)</div>
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#0284C7"></div>Residual bypass + ⊕ Add + LayerNorm</div>
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#059669"></div>FFN (16× expansion)</div>
+    <div style="display:flex;align-items:center;gap:5px"><div style="width:9px;height:9px;border-radius:2px;background:#D97706"></div>Output</div>
+    <span style="margin-left:auto;font-size:9px;color:var(--ink3)">⊕ = Add &amp; LayerNorm residual connection</span>
+  </div>
+</div>
+
+<div id="tp" style="display:none;position:fixed;max-width:256px;background:var(--bg2);border:1px solid var(--bdr);border-radius:8px;padding:10px 13px;font-size:10px;color:var(--ink2);line-height:1.7;z-index:200;pointer-events:none;font-family:'DM Mono',monospace;white-space:normal;word-break:break-word;box-shadow:0 8px 32px rgba(0,0,0,.5)"></div>
+
+<script>
+const tp=document.getElementById('tp'),PAD=14;
+document.querySelectorAll('[data-tip]').forEach(el=>{
+  el.style.cursor='default';
+  el.addEventListener('mouseenter',e=>{tp.textContent=el.dataset.tip;tp.style.left='-9999px';tp.style.top='-9999px';tp.style.display='block'});
+  el.addEventListener('mousemove',e=>{
+    const tw=tp.offsetWidth,th=tp.offsetHeight,vw=window.innerWidth,vh=window.innerHeight,cx=e.clientX,cy=e.clientY;
+    let left=cx+PAD,top=cy-th-PAD;
+    if(left+tw>vw-8)left=cx-tw-PAD;if(top<8)top=cy+PAD;
+    if(left<8)left=8;if(left+tw>vw-8)left=vw-tw-8;
+    if(top<8)top=8;if(top+th>vh-8)top=vh-th-8;
+    tp.style.left=left+'px';tp.style.top=top+'px'
+  });
+  el.addEventListener('mouseleave',()=>{tp.style.display='none'});
+});
+let dark=true;
+function toggleTheme(){dark=!dark;document.body.className=dark?'':'light';document.getElementById('themeBtn').textContent=dark?'🌙':'☀️'}
+if(window.matchMedia('(prefers-color-scheme: light)').matches)toggleTheme();
+</script>
+
+<script>
+(function(){
+  function sendHeight(){
+    var h = Math.max(
+      document.body.scrollHeight,
+      document.documentElement.scrollHeight
+    );
+    window.parent.postMessage({ type:'iframeResize', h:h }, '*');
+  }
+  // Fire after load + short delay (handles JS-rendered SVG content)
+  window.addEventListener('load', function(){ setTimeout(sendHeight, 150); });
+  // Re-fire on any layout change (theme toggle, tooltip open, window resize)
+  if(window.ResizeObserver){
+    new ResizeObserver(sendHeight).observe(document.documentElement);
+  }
+})();
+</script>
+
+</body>
+</html>
